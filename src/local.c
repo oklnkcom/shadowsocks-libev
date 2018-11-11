@@ -83,9 +83,8 @@
 #define BUF_SIZE 2048
 #endif
 
-int verbose        = 0;
-int reuse_port     = 0;
-int keep_resolving = 1;
+int verbose    = 0;
+int reuse_port = 0;
 
 #ifdef __ANDROID__
 int vpn        = 0;
@@ -283,7 +282,8 @@ server_handshake_reply(EV_P_ ev_io *w, int udp_assc, struct socks5_response *res
     server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
     server_t *server              = server_recv_ctx->server;
     remote_t *remote              = server->remote;
-    if (server->stage != STAGE_HANDSHAKE) return 0;
+    if (server->stage != STAGE_HANDSHAKE)
+        return 0;
 
     struct sockaddr_in sock_addr;
     if (udp_assc) {
@@ -296,7 +296,8 @@ server_handshake_reply(EV_P_ ev_io *w, int udp_assc, struct socks5_response *res
             close_and_free_server(EV_A_ server);
             return -1;
         }
-    } else memset(&sock_addr, 0, sizeof(sock_addr));
+    } else
+        memset(&sock_addr, 0, sizeof(sock_addr));
 
     buffer_t resp_to_send;
     buffer_t *resp_buf = &resp_to_send;
@@ -306,11 +307,11 @@ server_handshake_reply(EV_P_ ev_io *w, int udp_assc, struct socks5_response *res
     memcpy(resp_buf->data + sizeof(struct socks5_response),
            &sock_addr.sin_addr, sizeof(sock_addr.sin_addr));
     memcpy(resp_buf->data + sizeof(struct socks5_response) +
-               sizeof(sock_addr.sin_addr),
+           sizeof(sock_addr.sin_addr),
            &sock_addr.sin_port, sizeof(sock_addr.sin_port));
 
     int reply_size = sizeof(struct socks5_response) +
-        sizeof(sock_addr.sin_addr) + sizeof(sock_addr.sin_port);
+                     sizeof(sock_addr.sin_addr) + sizeof(sock_addr.sin_port);
 
     int s = send(server->fd, resp_buf->data, reply_size, 0);
 
@@ -364,7 +365,7 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
         return -1;
     }
 
-    char host[257], ip[INET6_ADDRSTRLEN], port[16];
+    char host[MAX_HOSTNAME_LEN+1], ip[INET6_ADDRSTRLEN], port[16];
 
     buffer_t *abuf = server->abuf;
     abuf->idx = 0;
@@ -385,17 +386,13 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
         if (acl || verbose) {
             uint16_t p = ntohs(*(uint16_t *)(buf->data + request_len + in_addr_len));
             if (!inet_ntop(AF_INET, (const void *)(buf->data + request_len),
-                      ip, INET_ADDRSTRLEN)) {
+                           ip, INET_ADDRSTRLEN)) {
                 LOGI("inet_ntop(AF_INET): %s", strerror(errno));
                 ip[0] = '\0';
             }
             sprintf(port, "%d", p);
         }
-    } else if (atyp == SOCKS5_ATYP_DOMAIN
-#ifdef __ANDROID__
-        && !vpn // protecting DNS packets isn't supported yet
-#endif
-    ) {
+    } else if (atyp == SOCKS5_ATYP_DOMAIN) {
         uint8_t name_len = *(uint8_t *)(buf->data + request_len);
         if (buf->len < request_len + 1 + name_len + 2) {
             return -1;
@@ -422,7 +419,7 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
         if (acl || verbose) {
             uint16_t p = ntohs(*(uint16_t *)(buf->data + request_len + in6_addr_len));
             if (!inet_ntop(AF_INET6, (const void *)(buf->data + request_len),
-                      ip, INET6_ADDRSTRLEN)) {
+                           ip, INET6_ADDRSTRLEN)) {
                 LOGI("inet_ntop(AF_INET6): %s", strerror(errno));
                 ip[0] = '\0';
             }
@@ -440,34 +437,37 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
 
     size_t abuf_len  = abuf->len;
     int sni_detected = 0;
-    int ret          = 0;
+    int hostname_len = 0;
 
     char *hostname;
     uint16_t dst_port = ntohs(*(uint16_t *)(abuf->data + abuf->len - 2));
 
     if (atyp == SOCKS5_ATYP_IPV4 || atyp == SOCKS5_ATYP_IPV6) {
         if (dst_port == http_protocol->default_port)
-            ret = http_protocol->parse_packet(buf->data + 3 + abuf->len,
+            hostname_len = http_protocol->parse_packet(buf->data + 3 + abuf->len,
                                               buf->len - 3 - abuf->len, &hostname);
         else if (dst_port == tls_protocol->default_port)
-            ret = tls_protocol->parse_packet(buf->data + 3 + abuf->len,
+            hostname_len = tls_protocol->parse_packet(buf->data + 3 + abuf->len,
                                              buf->len - 3 - abuf->len, &hostname);
-        if (ret == -1 && buf->len < BUF_SIZE && server->stage != STAGE_SNI) {
-            if (server_handshake_reply(EV_A_ w, 0, &response) < 0) return -1;
+        if (hostname_len == -1 && buf->len < BUF_SIZE && server->stage != STAGE_SNI) {
+            if (server_handshake_reply(EV_A_ w, 0, &response) < 0)
+                return -1;
             server->stage = STAGE_SNI;
             ev_timer_start(EV_A_ & server->delayed_connect_watcher);
             return -1;
-        } else if (ret > 0) {
+        } else if (hostname_len > 0) {
             sni_detected = 1;
             if (acl || verbose) {
-                memcpy(host, hostname, ret);
-                host[ret] = '\0';
+                hostname_len = hostname_len > MAX_HOSTNAME_LEN ? MAX_HOSTNAME_LEN : hostname_len;
+                memcpy(host, hostname, hostname_len);
+                host[hostname_len] = '\0';
             }
             ss_free(hostname);
         }
     }
 
-    if (server_handshake_reply(EV_A_ w, 0, &response) < 0) return -1;
+    if (server_handshake_reply(EV_A_ w, 0, &response) < 0)
+        return -1;
     server->stage = STAGE_STREAM;
 
     buf->len -= (3 + abuf_len);
@@ -504,27 +504,37 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
         else if (host_match < 0)
             bypass = 0;                             // proxy hostnames in white list
         else {
-            if (atyp == SOCKS5_ATYP_DOMAIN) {       // resolve domain so we can bypass domain with geoip
-                if (get_sockaddr(host, port, &storage, 0, ipv6first)) goto not_bypass;
+            if (atyp == SOCKS5_ATYP_DOMAIN
+#ifdef __ANDROID__
+                && !vpn
+#endif
+                ) {           // resolve domain so we can bypass domain with geoip
+                if (get_sockaddr(host, port, &storage, 0, ipv6first))
+                    goto not_bypass;
                 resolved = 1;
                 switch (((struct sockaddr *)&storage)->sa_family) {
                 case AF_INET:
                 {
                     struct sockaddr_in *addr_in = (struct sockaddr_in *)&storage;
-                    if (!inet_ntop(AF_INET, &(addr_in->sin_addr), ip, INET_ADDRSTRLEN)) goto not_bypass;
+                    if (!inet_ntop(AF_INET, &(addr_in->sin_addr), ip, INET_ADDRSTRLEN))
+                        goto not_bypass;
                     break;
                 }
                 case AF_INET6:
                 {
                     struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)&storage;
-                    if (!inet_ntop(AF_INET6, &(addr_in6->sin6_addr), ip, INET6_ADDRSTRLEN)) goto not_bypass;
+                    if (!inet_ntop(AF_INET6, &(addr_in6->sin6_addr), ip, INET6_ADDRSTRLEN))
+                        goto not_bypass;
                     break;
                 }
                 default:
                     goto not_bypass;
                 }
             }
-            int ip_match = acl_match_host(ip);
+
+            int ip_match = (resolved || atyp == SOCKS5_ATYP_IPV4
+                    || atyp == SOCKS5_ATYP_IPV6) ? acl_match_host(ip) : 0;
+
             switch (get_acl_mode()) {
             case BLACK_LIST:
                 if (ip_match > 0)
@@ -548,6 +558,11 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
                     LOGI("bypass [%s]:%s", ip, port);
             }
             if (atyp == SOCKS5_ATYP_DOMAIN && !resolved)
+#ifdef __ANDROID__
+                if (vpn)
+                    goto not_bypass;
+                else
+#endif
                 err = get_sockaddr(host, port, &storage, 0, ipv6first);
             else
                 err = get_sockaddr(ip, port, &storage, 0, ipv6first);
@@ -559,7 +574,7 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
         }
     }
 
-  not_bypass:
+not_bypass:
     // Not bypass
     if (remote == NULL) {
         remote = create_remote(server->listener, NULL);
@@ -572,9 +587,9 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
             // Reconstruct address buffer
             abuf->len               = 0;
             abuf->data[abuf->len++] = 3;
-            abuf->data[abuf->len++] = ret;
-            memcpy(abuf->data + abuf->len, host, ret);
-            abuf->len += ret;
+            abuf->data[abuf->len++] = hostname_len;
+            memcpy(abuf->data + abuf->len, host, hostname_len);
+            abuf->len += hostname_len;
             dst_port   = htons(dst_port);
             memcpy(abuf->data + abuf->len, &dst_port, 2);
             abuf->len += 2;
@@ -1384,7 +1399,6 @@ signal_cb(EV_P_ ev_signal *w, int revents)
             ev_io_stop(EV_DEFAULT, &plugin_watcher.io);
 #endif
 #endif
-            keep_resolving = 0;
             ev_unloop(EV_A_ EVUNLOOP_ALL);
         }
     }
@@ -1406,7 +1420,6 @@ plugin_watcher_cb(EV_P_ ev_io *w, int revents)
     ev_signal_stop(EV_DEFAULT, &sigint_watcher);
     ev_signal_stop(EV_DEFAULT, &sigterm_watcher);
     ev_io_stop(EV_DEFAULT, &plugin_watcher.io);
-    keep_resolving = 0;
     ev_unloop(EV_A_ EVUNLOOP_ALL);
 }
 
